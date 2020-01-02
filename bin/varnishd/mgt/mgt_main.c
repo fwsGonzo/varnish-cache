@@ -434,7 +434,6 @@ mgt_f_read(const char *fn)
 	VTAILQ_INSERT_TAIL(&f_args, fa, list);
 }
 
-<<<<<<< HEAD
 static struct vpf_fh *
 create_pid_file(pid_t *ppid, const char *fmt, ...)
 {
@@ -461,9 +460,7 @@ create_pid_file(pid_t *ppid, const char *fmt, ...)
 	return (pfh);
 }
 
-=======
 #ifndef LIBFUZZER_ENABLED
->>>>>>> mgt: Add libfuzzer mode, to be used with single-process mode
 int
 main(int argc, char * const *argv)
 #else
