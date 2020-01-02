@@ -459,8 +459,13 @@ create_pid_file(pid_t *ppid, const char *fmt, ...)
 	return (pfh);
 }
 
+#ifndef LIBFUZZER_ENABLED
 int
 main(int argc, char * const *argv)
+#else
+int
+varnishd_main(int argc, char * const *argv)
+#endif
 {
 	int o, eric_fd = -1;
 	unsigned C_flag = 0;
@@ -901,6 +906,9 @@ main(int argc, char * const *argv)
 		u = MCH_Start_Child();
 	else
 		u = 0;
+#ifdef LIBFUZZER_ENABLED
+	return (u);
+#endif
 
 	if (eric_fd >= 0)
 		mgt_eric_im_done(eric_fd, u);
