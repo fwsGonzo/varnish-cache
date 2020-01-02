@@ -45,6 +45,7 @@
 #include <unistd.h>
 
 #include "mgt.h"
+#include <pthread.h> /* mgt.h won't accept pthread.h */
 
 #include "vbm.h"
 #include "vcli_serve.h"
@@ -57,6 +58,7 @@
 #include "common/vsmw.h"
 
 static pid_t		child_pid = -1;
+static pthread_t	child_tid = -1;
 
 static struct vbitmap	*fd_map;
 
@@ -287,38 +289,41 @@ child_poker(const struct vev *e, int what)
  * Launch the child process
  */
 
-static void
+static void*
 child_startup(void *userdata)
 {
 	int i;
 	(void) userdata;
 
-	/* Redirect stdin/out/err */
-	VFIL_null_fd(STDIN_FILENO);
-	assert(dup2(heritage.std_fd, STDOUT_FILENO) == STDOUT_FILENO);
-	assert(dup2(heritage.std_fd, STDERR_FILENO) == STDERR_FILENO);
+	if (!MGT_DO_DEBUG(DBG_SINGLE_PROC)) {
 
-	/*
-	 * Close all FDs the child shouldn't know about
-	 *
-	 * We cannot just close these filedescriptors, some random
-	 * library routine might miss it later on and wantonly close
-	 * a FD we use at that point in time. (See bug #1841).
-	 * We close the FD and replace it with /dev/null instead,
-	 * That prevents security leakage, and gives the library
-	 * code a valid FD to close when it discovers the changed
-	 * circumstances.
-	 */
-	closelog();
-	for (i = STDERR_FILENO + 1; i <= CLOSE_FD_UP_TO; i++) {
-		if (vbit_test(fd_map, i))
-			continue;
-		if (close(i) == 0)
-			VFIL_null_fd(i);
-	}
-	for (i = CLOSE_FD_UP_TO + 1; i <= CHECK_FD_UP_TO; i++) {
-		assert(close(i) == -1);
-		assert(errno == EBADF);
+		/* Redirect stdin/out/err */
+		VFIL_null_fd(STDIN_FILENO);
+		assert(dup2(heritage.std_fd, STDOUT_FILENO) == STDOUT_FILENO);
+		assert(dup2(heritage.std_fd, STDERR_FILENO) == STDERR_FILENO);
+
+		/*
+		 * Close all FDs the child shouldn't know about
+		 *
+		 * We cannot just close these filedescriptors, some random
+		 * library routine might miss it later on and wantonly close
+		 * a FD we use at that point in time. (See bug #1841).
+		 * We close the FD and replace it with /dev/null instead,
+		 * That prevents security leakage, and gives the library
+		 * code a valid FD to close when it discovers the changed
+		 * circumstances.
+		 */
+		closelog();
+		for (i = STDERR_FILENO + 1; i <= CLOSE_FD_UP_TO; i++) {
+			if (vbit_test(fd_map, i))
+				continue;
+			if (close(i) == 0)
+				VFIL_null_fd(i);
+		}
+		for (i = CLOSE_FD_UP_TO + 1; i <= CHECK_FD_UP_TO; i++) {
+			assert(close(i) == -1);
+			assert(errno == EBADF);
+		}
 	}
 
 	mgt_ProcTitle("Child");
@@ -346,13 +351,16 @@ child_startup(void *userdata)
 	 */
 	// VSMW_Destroy(&heritage.proc_vsmw);
 
-	exit(0);
+	if (!MGT_DO_DEBUG(DBG_SINGLE_PROC))
+		exit(0);
+	return NULL;
 }
 
 static void
 mgt_launch_child(struct cli *cli)
 {
 	pid_t pid;
+	
 	unsigned u;
 	char *p;
 	struct vev *e;
@@ -389,26 +397,36 @@ mgt_launch_child(struct cli *cli)
 
 	AN(heritage.param);
 	AN(heritage.panic_str);
-	if ((pid = fork()) < 0) {
-		perror("Could not fork child");
-		exit(1);		// XXX Harsh ?
-	}
-	if (pid == 0) {
-		child_startup(NULL);
-	}
-	assert(pid > 1);
 
-	MGT_Complain(C_DEBUG, "Child (%jd) Started", (intmax_t)pid);
+	if (!MGT_DO_DEBUG(DBG_SINGLE_PROC)) {
+		if ((pid = fork()) < 0) {
+			perror("Could not fork child");
+			exit(1);		// XXX Harsh ?
+		}
+		if (pid == 0) {
+			child_startup(NULL);
+		}
+		assert(pid > 1);
+		MGT_Complain(C_DEBUG, "Child (%jd) Started", (intmax_t)pid);
+	} else {
+		pid = 0; /* pid == -1 is an error */
+		AZ(pthread_create(&child_tid, NULL, child_startup, NULL));
+		assert(child_tid > 0);
+		MGT_Complain(C_DEBUG, "Child (%jd) Started", (intmax_t)child_tid);
+	}
+
 	VSC_C_mgt->child_start++;
 
-	/* Close stuff the child got */
-	closefd(&heritage.std_fd);
+	if (!MGT_DO_DEBUG(DBG_SINGLE_PROC)) {
+		/* Close stuff the child got */
+		closefd(&heritage.std_fd);
 
-	MCH_Fd_Inherit(heritage.cli_in, NULL);
-	closefd(&heritage.cli_in);
+		MCH_Fd_Inherit(heritage.cli_in, NULL);
+		closefd(&heritage.cli_in);
 
-	MCH_Fd_Inherit(heritage.cli_out, NULL);
-	closefd(&heritage.cli_out);
+		MCH_Fd_Inherit(heritage.cli_out, NULL);
+		closefd(&heritage.cli_out);
+	}
 
 	child_std_vlu = VLU_New(child_line, NULL, 0);
 	AN(child_std_vlu);
@@ -457,6 +475,7 @@ mgt_launch_child(struct cli *cli)
 	free(p);
 	child_state = CH_RUNNING;
 }
+
 /*=====================================================================
  * Cleanup when child dies.
  */
@@ -467,10 +486,16 @@ kill_child(void)
 	int i, error;
 
 	VJ_master(JAIL_MASTER_KILL);
-	if (MGT_FEATURE(FEATURE_NO_COREDUMP))
-		i = kill(child_pid, SIGKILL);
-	else
-		i = kill(child_pid, SIGQUIT);
+	if (child_pid != -1) {
+		if (MGT_FEATURE(FEATURE_NO_COREDUMP))
+			i = kill(child_pid, SIGKILL);
+		else
+			i = kill(child_pid, SIGQUIT);
+	}
+	if (child_tid != -1) {
+		AZ(pthread_cancel(child_tid));
+		child_tid = -1;
+	}
 	error = errno;
 	VJ_master(JAIL_MASTER_LOW);
 	errno = error;
@@ -532,6 +557,14 @@ mgt_reap_child(void)
 	if (r != child_pid)
 		fprintf(stderr, "WAIT 0x%jd\n", (intmax_t)r);
 	assert(r == child_pid);
+
+	if (child_tid != -1) {
+		VSB_printf(vsb, "Child (%jd) being joined", (intmax_t)child_tid);
+		i = pthread_join(child_tid, NULL);
+		assert(i == 0);
+		r = child_tid;
+		child_tid = -1;
+	}
 
 	VSB_printf(vsb, "Child (%jd) %s", (intmax_t)r,
 	    status ? "died" : "ended");
