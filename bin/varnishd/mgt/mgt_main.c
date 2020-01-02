@@ -434,6 +434,7 @@ mgt_f_read(const char *fn)
 	VTAILQ_INSERT_TAIL(&f_args, fa, list);
 }
 
+<<<<<<< HEAD
 static struct vpf_fh *
 create_pid_file(pid_t *ppid, const char *fmt, ...)
 {
@@ -460,8 +461,15 @@ create_pid_file(pid_t *ppid, const char *fmt, ...)
 	return (pfh);
 }
 
+=======
+#ifndef LIBFUZZER_ENABLED
+>>>>>>> mgt: Add libfuzzer mode, to be used with single-process mode
 int
 main(int argc, char * const *argv)
+#else
+int
+varnishd_main(int argc, char * const *argv)
+#endif
 {
 	int o, eric_fd = -1;
 	unsigned C_flag = 0;
@@ -912,6 +920,9 @@ main(int argc, char * const *argv)
 		u = MCH_Start_Child();
 	else
 		u = 0;
+#ifdef LIBFUZZER_ENABLED
+	return (u);
+#endif
 
 	if (eric_fd >= 0)
 		mgt_eric_im_done(eric_fd, u);
