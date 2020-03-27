@@ -35,7 +35,7 @@
 
 #include "cache/cache.h"
 
-#include "vcc_if.h"
+#include "vmod_directors_if.h"
 
 #include "vdir.h"
 

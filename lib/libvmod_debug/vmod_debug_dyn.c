@@ -41,7 +41,7 @@
 
 #include "vsa.h"
 #include "vss.h"
-#include "vcc_if.h"
+#include "vmod_debug_if.h"
 
 struct xyzzy_debug_dyn {
 	unsigned		magic;
